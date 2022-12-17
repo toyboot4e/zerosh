@@ -65,7 +65,7 @@ pub fn run_shell(sh: &Shell) -> Result<(), DynError> {
     crate::worker::spawn_worker(worker_rx, shell_tx.clone());
 
     loop {
-        if !state.process(sh, &mut shell_rx)? {
+        if !self::process(&mut state, sh, &mut shell_rx)? {
             break;
         }
     }
@@ -122,48 +122,48 @@ impl State {
 
         format!("ZeroSh {face} %>")
     }
+}
 
-    /// Returns `Ok(true)` if the shell can continue processing
-    fn process(
-        &mut self,
-        sh: &Shell,
-        shell_rx: &mut mpsc::Receiver<ShellMsg>,
-    ) -> Result<bool, DynError> {
-        let prompt = self.prompt();
+/// Returns `Ok(true)` if the shell can continue processing
+fn process(
+    state: &mut State,
+    sh: &Shell,
+    shell_rx: &mut mpsc::Receiver<ShellMsg>,
+) -> Result<bool, DynError> {
+    let prompt = state.prompt();
 
-        // TODO: Allow multiline input (?)
-        use rustyline::error::ReadlineError;
-        let line = match self.editor.readline(&prompt) {
-            Ok(line) => line,
-            Err(ReadlineError::Interrupted) => {
-                todo!()
-            }
-            Err(ReadlineError::Eof) => {
-                todo!()
-            }
-            Err(err) => {
-                eprintln!("ZeroSh: read error\n{err}");
-                self.exit_code = 1;
-                return Ok(false);
-            }
-        };
-
-        let line = line.trim();
-        if line.is_empty() {
-            return Ok(true);
+    // TODO: Allow multiline input (?)
+    use rustyline::error::ReadlineError;
+    let line = match state.editor.readline(&prompt) {
+        Ok(line) => line,
+        Err(ReadlineError::Interrupted) => {
+            todo!()
         }
-        self.editor.add_history_entry(line);
+        Err(ReadlineError::Eof) => {
+            todo!()
+        }
+        Err(err) => {
+            eprintln!("ZeroSh: read error\n{err}");
+            state.exit_code = 1;
+            return Ok(false);
+        }
+    };
 
-        self.worker_tx.send(WorkerMsg::Cmd {
-            cmd: line.to_string(),
-        })?;
+    let line = line.trim();
+    if line.is_empty() {
+        return Ok(true);
+    }
+    state.editor.add_history_entry(line);
 
-        match shell_rx.recv()? {
-            ShellMsg::Continue { code } => Ok(self.last_exit_code == code),
-            ShellMsg::Quit { code } => {
-                self.exit_code = code;
-                Ok(false)
-            }
+    state.worker_tx.send(WorkerMsg::Cmd {
+        cmd: line.to_string(),
+    })?;
+
+    match shell_rx.recv()? {
+        ShellMsg::Continue { code } => Ok(state.last_exit_code == code),
+        ShellMsg::Quit { code } => {
+            state.exit_code = code;
+            Ok(false)
         }
     }
 }
