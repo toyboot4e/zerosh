@@ -4,7 +4,7 @@
 //!
 //! - `main` reads user input and sends it to the `worker` thread.
 //! - `signal_handler` receieves signals and sends them to the `worker` thread.
-//! - `worker` is the core processor and manages processes.
+//! - `worker` is the core processor and the process manager.
 
 pub mod shell;
 
@@ -14,7 +14,7 @@ mod worker;
 
 use nix::sys::signal;
 
-use std::{sync::mpsc, thread};
+use std::{ops::ControlFlow, sync::mpsc, thread};
 
 pub type DynError = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -49,7 +49,7 @@ impl Shell {
     }
 }
 
-/// Creates `worker` and the `signal_handler` threads from the `main` thread and starts handling
+/// Creates the `worker` and the `signal_handler` threads from the `main` thread and starts handling
 /// user input.
 pub fn run_shell(sh: &Shell) -> Result<(), DynError> {
     unsafe {
@@ -65,7 +65,7 @@ pub fn run_shell(sh: &Shell) -> Result<(), DynError> {
     crate::worker::spawn_worker(worker_rx, shell_tx.clone());
 
     loop {
-        if !self::process(&mut state, sh, &mut shell_rx)? {
+        if self::process(&mut state, sh, &mut shell_rx)?.is_break() {
             break;
         }
     }
@@ -129,29 +129,42 @@ fn process(
     state: &mut State,
     sh: &Shell,
     shell_rx: &mut mpsc::Receiver<ShellMsg>,
-) -> Result<bool, DynError> {
+) -> Result<ControlFlow<()>, DynError> {
     let prompt = state.prompt();
 
     // TODO: Allow multiline input (?)
     use rustyline::error::ReadlineError;
+    use ControlFlow::*;
+
     let line = match state.editor.readline(&prompt) {
         Ok(line) => line,
         Err(ReadlineError::Interrupted) => {
-            todo!()
+            eprintln!("ZeroSh: you can exit with `Ctrl+d`");
+            return Ok(Continue(()));
         }
         Err(ReadlineError::Eof) => {
-            todo!()
+            state.worker_tx.send(WorkerMsg::Cmd {
+                cmd: "exit".to_string(),
+            })?;
+
+            match shell_rx.recv()? {
+                ShellMsg::Quit { code } => {
+                    state.exit_code = code;
+                    return Ok(Break(()));
+                }
+                _ => panic!("failed to exit")
+            }
         }
         Err(err) => {
             eprintln!("ZeroSh: read error\n{err}");
             state.exit_code = 1;
-            return Ok(false);
+            return Ok(Break(()));
         }
     };
 
     let line = line.trim();
     if line.is_empty() {
-        return Ok(true);
+        return Ok(Continue(()));
     }
     state.editor.add_history_entry(line);
 
@@ -160,10 +173,13 @@ fn process(
     })?;
 
     match shell_rx.recv()? {
-        ShellMsg::Continue { code } => Ok(state.last_exit_code == code),
+        ShellMsg::Continue { code } => {
+            state.last_exit_code = code;
+            Ok(Continue(()))
+        }
         ShellMsg::Quit { code } => {
             state.exit_code = code;
-            Ok(false)
+            Ok(Break(()))
         }
     }
 }
