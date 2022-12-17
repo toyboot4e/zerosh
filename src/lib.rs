@@ -1,0 +1,2 @@
+//! Zero Shell library
+
